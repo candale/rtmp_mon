@@ -1,0 +1,37 @@
+FROM ubuntu:18.04
+
+ARG NGINX_VERSION=1.17.9
+ENV PATH="/usr/local/nginx/sbin/:${PATH}"
+EXPOSE 1935
+
+RUN apt-get update && \
+    apt-get install wget vim git tar ffmpeg build-essential libpcre3 libpcre3-dev libssl-dev zlib1g-dev -y
+
+RUN mkdir /app /app/tmp
+WORKDIR /app
+
+# download nginx and rtmp nginx module
+RUN cd tmp && \
+    wget http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz && \
+    wget https://github.com/arut/nginx-rtmp-module/archive/v1.2.1.tar.gz && \
+    echo "=== unzip ===" && \
+    tar xzf nginx-${NGINX_VERSION}.tar.gz && \
+    tar xzf v1.2.1.tar.gz
+
+# build ninx
+RUN cd tmp/nginx-${NGINX_VERSION} && \
+    ./configure --with-http_ssl_module --add-module=../nginx-rtmp-module-1.2.1 && \
+    make && \
+    make install && \ 
+    # copy stats file
+    cp ../nginx-rtmp-module-1.2.1/stat.xsl /app/stat.xsl
+
+RUN rm -rf tmp
+
+RUN mkdir /var/log/nginx && \
+    ln -s /dev/stdout /var/log/nginx/access.log && \
+    ln -s /dev/stderr /var/log/nginx/error.log
+
+COPY nginx.conf /usr/local/nginx/conf/nginx.conf
+
+CMD ["nginx", "-g", "daemon off;"]
