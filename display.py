@@ -41,6 +41,7 @@ def add_to_list_max_n(l, n):
 
 
 class RTMPStat:
+    """Parse the page and hand over the raw data"""
 
     def __init__(self, url):
         self.url = url
@@ -109,6 +110,7 @@ class RTMPStat:
 
 
 class RTMPDataMon:
+    """Create stats based on raw data coming from the page"""
 
     def __init__(self, stat_url, max_history_points=30):
         self._stream_stats = defaultdict(StreamStat)
@@ -141,6 +143,7 @@ class RTMPDataMon:
 
 
 class GraphManager:
+    """Handle the painting of the data based on calculated stats"""
 
     def __init__(
             self,
