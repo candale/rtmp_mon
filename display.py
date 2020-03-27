@@ -13,15 +13,6 @@ from lxml import etree
 import requests
 
 
-UPDATE_INTERVAL = 50
-ROLLOVER = 1000  # Number of displayed data points
-
-raw_data_source = ColumnDataSource({"x": [], "y": []})
-median_line_source = ColumnDataSource({"x": [], "y": []})
-
-last_bytes_in = None
-
-
 @dataclass
 class StreamStat:
 
