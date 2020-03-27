@@ -2,3 +2,4 @@ beautifulsoup4==4.8.2
 requests
 ipython
 bokeh
+lxml
