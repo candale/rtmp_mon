@@ -1,5 +1,6 @@
 import os
 import copy
+import logging
 from typing import List
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -7,10 +8,13 @@ from collections import defaultdict
 
 from bokeh.models import ColumnDataSource
 from bokeh.plotting import curdoc, figure
-from bokeh.layouts import row
+from bokeh.layouts import row, layout
 
 from lxml import etree
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -18,8 +22,11 @@ class StreamStat:
 
     name: str = None
     last_bytes_in: int = None
-    current_rate: int = None
+    bytes_in_rate: int = None
     history: List[int] = field(default_factory=list)
+    bps_in_audio: int = 0
+    bps_in_video: int = 0
+    publishing_dropped: int = 0
 
 
 def add_to_list_max_n(l, n):
@@ -120,9 +127,20 @@ class RTMPDataMon:
                 stream_stat.last_bytes_in = stream_info['bytes_in']
                 continue
 
-            stream_stat.current_rate = (
+            stream_stat.bytes_in_rate = (
                 stream_info['bytes_in'] - stream_stat.last_bytes_in)
             stream_stat.last_bytes_in = stream_info['bytes_in']
+            stream_stat.bps_in_video = stream_info['bw_video']
+            stream_stat.bps_in_audio = stream_info['bw_audio']
+            streaming_client = None
+            for client in stream_info['clients']:
+                if client['publishing']:
+                    streaming_client = client
+                    break
+            else:
+                logger.error('Weird, no streaming client?')
+            stream_stat.publishing_dropped = streaming_client['dropped']
+
             add_to_list_max_n(stream_stat.history, self.max_history_points)
 
     def run(self):
@@ -131,6 +149,91 @@ class RTMPDataMon:
             return False
 
         self.compute_point_in_time(streams)
+
+
+class StreamGraphManager:
+
+    def __init__(self, stream_name, rollover=500):
+        self.stream_name = stream_name
+        self.rollover = rollover
+        self._update_functions = []
+        self._graphs = []
+        self._make_representation()
+
+    def make_bps_in_video_graph(self):
+        source = ColumnDataSource({'time': [], 'bits/s': []})
+        graph = figure(
+            title="STREAM: {} | KBPS IN VIDEO".format(self.stream_name),
+            x_axis_type="datetime",
+            width=500, height=200
+        )
+        graph.line('time', 'bits/s', source=source)
+
+        def update_function(stream_stat):
+            kpbs_in_video = round(
+                stream_stat.bps_in_video / 1024, 2)
+            source.stream(
+                {'time': [datetime.utcnow()], 'bits/s': [kpbs_in_video]},
+                rollover=self.rollover
+            )
+
+        return graph, update_function
+
+    def make_bps_in_audio_graph(self):
+        source = ColumnDataSource({'time': [], 'bits/s': []})
+        graph = figure(
+            title="STREAM: {} | KBPS IN AUDIO".format(self.stream_name),
+            x_axis_type="datetime",
+            width=500, height=200
+        )
+        graph.line('time', 'bits/s', source=source)
+
+        def update_function(stream_stat):
+            kpbs_in_audio = round(
+                stream_stat.bps_in_audio / 1024, 2)
+            source.stream(
+                {'time': [datetime.utcnow()], 'bits/s': [kpbs_in_audio]},
+                rollover=self.rollover
+            )
+
+        return graph, update_function
+
+    def make_dropped_graph(self):
+        source = ColumnDataSource({'time': [], 'dropped': []})
+        graph = figure(
+            title="STREAM: {} | DROPPED FRAMES".format(self.stream_name),
+            x_axis_type="datetime",
+            width=500, height=200
+        )
+        graph.line('time', 'dropped', source=source)
+
+        def update_function(stream_stat):
+            source.stream(
+                {'time': [datetime.utcnow()], 'dropped': [stream_stat.publishing_dropped]},
+                rollover=self.rollover
+            )
+
+        return graph, update_function
+
+    def _make_representation(self):
+        graph_functions = [
+            self.make_bps_in_video_graph,
+            self.make_bps_in_audio_graph,
+            self.make_dropped_graph
+        ]
+
+        for graph_function in graph_functions:
+            graph, update_function = graph_function()
+            self._update_functions.append(update_function)
+            self._graphs.append(graph)
+
+    @property
+    def representation(self) -> list:
+        return self._graphs
+
+    def update(self, stream_stat):
+        for update_function in self._update_functions:
+            update_function(stream_stat)
 
 
 class GraphManager:
@@ -142,51 +245,39 @@ class GraphManager:
             rollover=100,
             update_interval=100
     ):
-        self.rtmp_data_mon = rtmp_data_mon
+        self._rtmp_data_mon = rtmp_data_mon
         self.rollover = rollover
         self.update_interval = update_interval
-        self._sources = {}
-        self._figures = {}
-        self._x_count = 0
+        self._streams_graphs = {}
 
-    @property
-    def figures(self):
-        return list(self._figures.values())
+    def _init_streams(self):
+        self._rtmp_data_mon.run()
+        for stream_name, stream_stat in self._rtmp_data_mon.stream_stats.items():
+            self._streams_graphs[stream_name] = StreamGraphManager(stream_name)
 
-    def make_figure_and_source(self, stream_stat):
-        source = ColumnDataSource({"x": [], "y": []})
-        graph = figure(
-            title="STREAM: {} | BYTES IN".format(stream_stat.name),
-            x_axis_type="datetime"
-        )
-        graph.line('x', 'y', source=source)
-
-        return graph, source
-
-    def _init_sources(self):
-        self.rtmp_data_mon.run()
-        for stream_name, stream_stat in self.rtmp_data_mon.stream_stats.items():
-            self._figures[stream_name], self._sources[stream_name] = (
-                self.make_figure_and_source(stream_stat))
-
-    def update_data_sources(self):
-        self.rtmp_data_mon.run()
-        for stream_name, stream_stat in self.rtmp_data_mon.stream_stats.items():
-            data_source = self._sources.get(stream_name)
-            if data_source is None:
+    def update_stream_graphs(self):
+        self._rtmp_data_mon.run()
+        for stream_name, stream_stat in self._rtmp_data_mon.stream_stats.items():
+            if stream_name not in self._streams_graphs:
+                logger.warning(
+                    "Another stream [{}] appeared but we don't have a graph for it"
+                    .format(stream_name)
+                )
                 continue
 
-            data_source.stream(
-                {'x': [datetime.utcnow()], 'y': [stream_stat.current_rate]},
-                rollover=self.rollover
-            )
-            self._x_count += 1
+            stream_graph = self._streams_graphs[stream_name]
+            stream_graph.update(stream_stat)
 
     def run(self):
-        self._init_sources()
+        self._init_streams()
         doc = curdoc()
-        doc.add_root(row(*self.figures))
-        doc.add_periodic_callback(self.update_data_sources, self.update_interval)
+
+        rows = []
+        for stream_name, stream_graph in self._streams_graphs.items():
+            rows.append(stream_graph.representation)
+
+        doc.add_root(layout(rows))
+        doc.add_periodic_callback(self.update_stream_graphs, self.update_interval)
 
 
 rtmp_data_mon = RTMPDataMon(os.environ['STAT_URL'])
