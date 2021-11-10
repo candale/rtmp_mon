@@ -23,8 +23,7 @@ class StreamStat:
 
     name: str = None
     last_bytes_in: int = None
-    bps_in_by_time: int = None
-    bps_in_naive: int = None
+    bytes_ps_in: int = None
     history: List[int] = field(default_factory=list)
     bps_in_audio: int = 0
     bps_in_video: int = 0
@@ -132,8 +131,7 @@ class RTMPDataMon:
 
             elapsed_ms = (time.time() - stream_stat.last_time_sampled) * 1000
             diff = stream_info['bytes_in'] - stream_stat.last_bytes_in
-            stream_stat.bps_in_naive = diff
-            stream_stat.bps_in_by_time = diff * 1000 / elapsed_ms
+            stream_stat.bytes_ps_in = diff * 1000 / elapsed_ms
 
             stream_stat.last_bytes_in = stream_info['bytes_in']
             stream_stat.last_time_sampled = time.time()
@@ -169,32 +167,22 @@ class StreamGraphManager:
         self._make_representation()
 
     def make_bytes_in_graph(self):
-        source1 = ColumnDataSource({'time': [], 'bytes_in_naive': []})
-        source2 = ColumnDataSource({'time': [], 'bytes_in_time': []})
+        source = ColumnDataSource({'time': [], 'kpbs': []})
         graph = figure(
             title="STREAM: {} | KB IN".format(self.stream_name),
             x_axis_type="datetime",
             width=500, height=200
         )
         graph.line(
-            'time', 'bytes_in_naive', source=source1, line_color='red',
-            legend_label='Simple subtraction'
-        )
-        graph.line(
-            'time', 'bytes_in_time', source=source2, line_color='blue',
-            legend_label='Time based')
+            'time', 'kpbs', source=source, line_color='blue',
+            legend_label='KPBS')
         graph.legend.location = "top_left"
 
         def update_function(stream_stat):
-            kbps_bps_in_by_time = round(
-                stream_stat.bps_in_by_time / 1024, 2)
-            kbps_in_naive = round(stream_stat.bps_in_naive / 1014, 2)
-            source1.stream(
-                {'time': [datetime.utcnow()], 'bytes_in_naive': [kbps_in_naive]},
-                rollover=self.rollover
-            )
-            source2.stream(
-                {'time': [datetime.utcnow()], 'bytes_in_time': [kbps_bps_in_by_time]},
+            kbps_bytes_ps_in = round(
+                stream_stat.bytes_ps_in / 1024, 2)
+            source.stream(
+                {'time': [datetime.utcnow()], 'kpbs': [kbps_bytes_ps_in]},
                 rollover=self.rollover
             )
 
